@@ -1,11 +1,12 @@
 use alloc::vec::Vec;
+use bootloader_api::info::FrameBufferInfo;
 use embedded_graphics::{
     Pixel,
     pixelcolor::Rgb888,
     prelude::{DrawTarget, OriginDimensions, RgbColor, Size},
 };
 
-enum DisplayError {}
+pub enum DisplayError {}
 
 pub struct DisplayManager<'a> {
     main_display: Option<Display<'a>>,
@@ -54,15 +55,12 @@ impl<'a> DisplayManager<'a> {
 
 pub struct Display<'a> {
     framebuffer: &'a mut [u8],
-    buffer_dimensions: Size,
+    info: FrameBufferInfo,
 }
 
 impl<'a> Display<'a> {
-    pub const fn new(framebuffer: &'a mut [u8], width: u32, height: u32) -> Self {
-        Self {
-            framebuffer,
-            buffer_dimensions: Size::new(width, height),
-        }
+    pub const fn new(framebuffer: &'a mut [u8], info: FrameBufferInfo) -> Self {
+        Self { framebuffer, info }
     }
 }
 
@@ -74,14 +72,21 @@ impl<'a> DrawTarget for Display<'a> {
     where
         I: IntoIterator<Item = Pixel<Self::Color>>,
     {
-        for Pixel(coord, color) in pixels.into_iter() {
-            if let Ok((x @ 0..=63, y @ 0..=63)) = coord.try_into() {
-                // Calculate the index in the framebuffer.
-                let index: u32 = x + y * 64;
+        let width = self.info.width;
+        let height = self.info.height;
 
-                self.framebuffer[index as usize] = color.r();
-                self.framebuffer[index as usize + 1] = color.g();
-                self.framebuffer[index as usize + 2] = color.b();
+        for Pixel(coord, color) in pixels.into_iter() {
+            if let Ok((x, y)) = coord.try_into() {
+                let (x, y): (u32, u32) = (x, y);
+                let (x, y): (usize, usize) = (x as usize, y as usize);
+
+                if x >= width || y >= height {
+                    continue;
+                }
+
+                let index = ((y * width + x) * self.info.bytes_per_pixel) as usize;
+                let buffer = [color.b(), color.g(), color.r()];
+                self.framebuffer[index..index + 3].copy_from_slice(&buffer);
             }
         }
 
@@ -91,6 +96,6 @@ impl<'a> DrawTarget for Display<'a> {
 
 impl<'a> OriginDimensions for Display<'a> {
     fn size(&self) -> Size {
-        return self.buffer_dimensions;
+        return Size::new(self.info.width as u32, self.info.height as u32);
     }
 }

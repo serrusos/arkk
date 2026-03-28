@@ -1,15 +1,21 @@
 pub mod errors;
+mod idt;
 
 use embedded_graphics::{
     draw_target::DrawTarget,
     geometry::OriginDimensions,
-    mono_font::iso_8859_5::FONT_8X13,
-    prelude::{Point, RgbColor},
+    mono_font::{MonoTextStyle, iso_8859_5::FONT_10X20},
+    pixelcolor::Rgb888,
+    prelude::{Dimensions, Drawable, Point, RgbColor},
     primitives::Rectangle,
+    text::Text,
 };
 
+use crate::{PANIC_MANAGER, panic::errors::ErrorTypeEnum, serial};
+
+use core::fmt::Write;
+
 use super::DISPLAY_MANAGER;
-use super::graphical::console::Console;
 
 pub struct PanicManager {}
 
@@ -18,35 +24,79 @@ impl PanicManager {
         Self {}
     }
 
-    pub fn bug_check(&mut self, code: errors::ErrorTypeEnum) -> ! {
+    pub fn inject_table(&self) {
+        idt::load();
+    }
+
+    pub fn bug_check(
+        &mut self,
+        code: errors::ErrorTypeEnum,
+        parameter_1: Option<*const u32>,
+        parameter_2: Option<*const u32>,
+        parameter_3: Option<*const u32>,
+        parameter_4: Option<*const u32>,
+    ) -> ! {
+        let mut port = serial();
+        writeln!(port, "Locking display manager").unwrap();
         let mut manager = DISPLAY_MANAGER.lock();
 
-        if let Some(displays) = manager.all_displays() {
-            for display in displays {
-                let rect = Rectangle::new(Point::new(0, 0), display.size());
-                display.fill_solid(&rect, RgbColor::BLUE);
-            }
-        }
+        writeln!(port, "Reading main display").unwrap();
+        if let Some(display) = manager.get_display(0) {
+            let size = display.size();
+            let rect = Rectangle::new(Point::new(0, 0), size);
+            display.fill_solid(&rect, Rgb888::new(0, 0, 0));
 
-        if let Some(main_display) = manager.get_display(0) {
-            let mut console =
-                Console::new(main_display, &FONT_8X13, RgbColor::WHITE, RgbColor::BLUE);
+            let mut buf = [0u8; 128];
+            let s = format_no_std::show(
+                &mut buf,
+                format_args!(
+                    "Stop code: {} 0x{:08x} (0x{:08x}, 0x{:08x}, 0x{:08x}, 0x{:08x})",
+                    code.as_str(),
+                    code.as_code(),
+                    parameter_1.unwrap_or(0 as *const u32) as u32,
+                    parameter_2.unwrap_or(0 as *const u32) as u32,
+                    parameter_3.unwrap_or(0 as *const u32) as u32,
+                    parameter_4.unwrap_or(0 as *const u32) as u32,
+                ),
+            );
 
-            let mut buf = [0u8; 64];
-            let s = format_no_std::show(&mut buf, format_args!("*** STOP: {:x}", code.as_code()));
+            let style = MonoTextStyle::new(&FONT_10X20, Rgb888::WHITE);
 
-            console.push(s.unwrap());
-            console.newline();
-            console.push(code.as_str());
-            console.push("If this is the first time you've seen this Stop error screen, restart your computer. If this screen appears again, follow these steps:");
-            console.newline();
-            console.newline();
-            console.push("Check for viruses on your computer. Remove any newly installed hard drives or hard drive controllers. Check your hard drive to make sure it is properly configured and terminated. Run CHKDSK /F to check for hard drive corruption, and then restart your computer.");
-            console.newline();
-            console.newline();
-            console.push("Refer to your Getting Started manual for more information on troubleshooting Stop errors.");
+            let mut btext = Text::new(s.unwrap(), Point::new(0, 0), style);
+            let mut mtext = Text::new(
+                "Your device ran into a problem and needs to restart.",
+                Point::new(0, 0),
+                style,
+            );
+
+            let bbb = btext.bounding_box();
+            let mbb = mtext.bounding_box();
+
+            btext.position = Point::new(
+                ((size.width - bbb.size.width) / 2) as i32,
+                (size.height - bbb.size.height - 10) as i32,
+            );
+            mtext.position = Point::new(
+                ((size.width - mbb.size.width) / 2) as i32,
+                ((size.height - mbb.size.height) / 2) as i32,
+            );
+
+            btext.draw(display).unwrap();
+            mtext.draw(display).unwrap();
         }
 
         loop {}
     }
+}
+
+#[panic_handler]
+fn panic(_: &core::panic::PanicInfo) -> ! {
+    let mut panic_manager = PANIC_MANAGER.lock();
+    panic_manager.bug_check(
+        ErrorTypeEnum::KernelModeExceptionNotHandled,
+        None,
+        None,
+        None,
+        None,
+    );
 }

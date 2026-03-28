@@ -3,8 +3,9 @@
 
 extern crate alloc;
 
-mod devices;
-mod panic;
+pub mod devices;
+pub mod graphical;
+pub mod panic;
 
 use crate::{
     devices::display::{Display, DisplayManager},
@@ -44,9 +45,9 @@ fn main(boot_info: &'static mut BootInfo) -> ! {
 }
 
 #[panic_handler]
-#[cfg(not(test))]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    loop {}
+fn panic(_: &core::panic::PanicInfo) -> ! {
+    let mut panic_manager = PANIC_MANAGER.lock();
+    panic_manager.bug_check(ErrorTypeEnum::TrapCauseUnknown);
 }
 
 entry_point!(main);

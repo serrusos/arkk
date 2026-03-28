@@ -831,8 +831,8 @@ impl ErrorTypeEnum {
         }
     }
 
-    pub fn as_code(error_type: ErrorTypeEnum) -> u32 {
-        match error_type {
+    pub fn as_code(&self) -> u32 {
+        match self {
             ErrorTypeEnum::ApcIndexMismatch => 0x1,
             ErrorTypeEnum::DeviceQueueNotBusy => 0x2,
             ErrorTypeEnum::InvalidAffinitySet => 0x3,

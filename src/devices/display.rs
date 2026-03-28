@@ -39,6 +39,17 @@ impl<'a> DisplayManager<'a> {
             self.other_displays.as_mut()?.get_mut(index - 1)
         }
     }
+
+    pub fn all_displays(&mut self) -> Option<Vec<&mut Display<'a>>> {
+        let mut displays = Vec::new();
+        if let Some(main_display) = &mut self.main_display {
+            displays.push(main_display);
+            displays.extend(self.other_displays.iter_mut().flat_map(|v| v.iter_mut()));
+            Some(displays)
+        } else {
+            None
+        }
+    }
 }
 
 pub struct Display<'a> {

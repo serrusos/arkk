@@ -1,251 +1,190 @@
+use core::{fmt, fmt::Write};
+
 use embedded_graphics::{
-    mono_font::{MonoFont, MonoTextStyle},
-    pixelcolor::PixelColor,
+    mono_font::{MonoFont, MonoTextStyleBuilder},
+    pixelcolor::Rgb888,
     prelude::*,
-    primitives::{PrimitiveStyle, Rectangle},
-    text::Text,
+    primitives::{PrimitiveStyleBuilder, Rectangle},
+    text::{Baseline, Text, TextStyleBuilder},
 };
 
-pub struct Console<'a, C, D>
-where
-    C: PixelColor,
-    D: DrawTarget<Color = C>,
-{
-    display: &'a mut D,
-    bounds: Rectangle,
-    font: &'a MonoFont<'a>,
-    fg: C,
-    bg: C,
+use crate::graphical::framebuffer::FrameBuffer;
 
-    // current cursor position in pixels (relative to bounds origin)
-    cursor: Point,
-
-    char_w: u32,
-    char_h: u32,
-    spacing: u32,
+struct Cursor {
+    maximum_width: u32,
+    maximum_height: u32,
+    width: u32,
+    height: u32,
 }
 
-impl<'a, C, D> Console<'a, C, D>
-where
-    C: PixelColor,
-    D: DrawTarget<Color = C>,
-{
-    /// Create a new console that fills the entire display area.
-    pub fn new(display: &'a mut D, font: &'a MonoFont<'a>, fg: C, bg: C) -> Self
-    where
-        D: OriginDimensions,
-    {
-        let size = display.size();
-        Self::with_bounds(display, Rectangle::new(Point::zero(), size), font, fg, bg)
+impl Cursor {
+    pub fn new(maximum_width: u32, maximum_height: u32) -> Self {
+        Self {
+            maximum_width,
+            maximum_height,
+            width: 0,
+            height: 0,
+        }
     }
+}
 
-    /// Create a console constrained to a specific rectangle on the display.
-    pub fn with_bounds(
-        display: &'a mut D,
-        bounds: Rectangle,
+pub struct Console<'a> {
+    font: &'a MonoFont<'a>,
+    framebuffer: &'a mut FrameBuffer<'a>,
+
+    bounds: Rectangle,
+    cursor: Cursor,
+
+    character_size: Size,
+
+    background: Rgb888,
+}
+
+impl<'a> Console<'a> {
+    pub fn new(
         font: &'a MonoFont<'a>,
-        fg: C,
-        bg: C,
+        framebuffer: &'a mut FrameBuffer<'a>,
+        position: Point,
+        size: Size,
+        background: Rgb888,
     ) -> Self {
-        let char_w = font.character_size.width;
-        let char_h = font.character_size.height;
-        let spacing = font.character_spacing;
+        let w = font.character_size.width;
+        let h = font.character_size.height + font.character_spacing;
+        let mcw = size.width / w;
+        let mch = size.height / h;
+
+        let bounds = Rectangle::new(position, size);
+        framebuffer.fill_solid(&bounds, Rgb888::new(0, 0, 0));
 
         Self {
-            display,
-            bounds,
             font,
-            fg,
-            bg,
-            cursor: Point::zero(),
-            char_w,
-            char_h,
-            spacing,
+            framebuffer,
+            bounds,
+            cursor: Cursor::new(mcw, mch),
+            character_size: Size::new(w, h),
+            background,
         }
     }
 
-    /// Clear the console area with the background colour.
-    pub fn clear(&mut self) -> Result<(), D::Error> {
-        self.bounds
-            .into_styled(PrimitiveStyle::with_fill(self.bg))
-            .draw(self.display)?;
-        self.cursor = Point::zero();
-        Ok(())
+    pub fn get_pixel_position(&self) -> Point {
+        Point::new(
+            self.bounds.top_left.x + (self.cursor.width * self.character_size.width) as i32,
+            self.bounds.top_left.y + (self.cursor.height * self.character_size.height) as i32,
+        )
     }
 
-    /// Move the cursor to the start of the next line, scrolling if necessary.
-    pub fn newline(&mut self) -> Result<(), D::Error> {
-        self.cursor.x = 0;
-        self.cursor.y += self.char_h as i32;
-        self.scroll_if_needed()?;
-        Ok(())
-    }
+    pub fn draw_text(&mut self, text: &str, foreground: Rgb888) -> Result<(), ()> {
+        for ch in text.chars() {
+            if ch == '\n' {
+                self.cursor.width = 0;
+                self.cursor.height += 1;
+            } else {
+                let pos = self.get_pixel_position();
 
-    /// Push a string, wrapping at word boundaries (or mid-word if a single
-    /// word is wider than the console).
-    pub fn push(&mut self, text: &str) -> Result<(), D::Error> {
-        let max_w = self.bounds.size.width;
+                let mut char_buf = [0u8; 4];
+                let char_str = ch.encode_utf8(&mut char_buf);
 
-        // How many chars fit on one line?
-        let chars_per_line = self.chars_per_line();
-        if chars_per_line == 0 {
-            return Ok(());
-        }
+                let style = MonoTextStyleBuilder::new()
+                    .font(self.font)
+                    .text_color(foreground)
+                    .background_color(self.background)
+                    .build();
 
-        let mut remaining = text;
+                let text_style = TextStyleBuilder::new().baseline(Baseline::Top).build();
 
-        while !remaining.is_empty() {
-            // How many pixels are already used on the current line?
-            let used_px = self.cursor.x as u32;
-            // How many more chars fit on this line?
-            let space_chars = self.px_to_chars(max_w.saturating_sub(used_px));
+                Text::with_text_style(char_str, pos, style, text_style)
+                    .draw(self.framebuffer)
+                    .map_err(|_| ())?;
 
-            if space_chars == 0 {
-                self.newline()?;
-                continue;
+                self.cursor.width += 1;
+
+                if self.cursor.width >= self.cursor.maximum_width {
+                    self.cursor.width = 0;
+                    self.cursor.height += 1;
+                }
             }
 
-            // Find the best break point within `space_chars` characters.
-            let (chunk, rest) = Self::split_at_wrap(remaining, space_chars);
-
-            self.draw_str(chunk)?;
-            remaining = rest;
-
-            // If there is more text, we wrapped — move to the next line.
-            if !remaining.is_empty() {
-                // Skip a leading space at the start of the next line.
-                remaining = remaining.trim_start_matches(' ');
-                self.newline()?;
+            if self.cursor.height >= self.cursor.maximum_height {
+                self.scroll_up();
             }
         }
 
         Ok(())
     }
 
-    // ------------------------------------------------------------------ //
-    //  Internal helpers
-    // ------------------------------------------------------------------ //
+    fn scroll_up(&mut self) {
+        let line_h = self.character_size.height;
+        let total_lines = self.cursor.maximum_height;
+        let total_width = self.bounds.size.width;
 
-    /// Draw a string at the current cursor, advancing the cursor.
-    /// Does NOT wrap — callers must have pre-split the string.
-    fn draw_str(&mut self, s: &str) -> Result<(), D::Error> {
-        if s.is_empty() {
-            return Ok(());
-        }
-
-        let origin = self.bounds.top_left + self.cursor
-            // MonoTextStyle baseline is at the BOTTOM of the character cell.
-            + Point::new(0, self.char_h as i32 - 1);
-
-        let style = MonoTextStyle::new(self.font, self.fg);
-        Text::new(s, origin, style).draw(self.display)?;
-
-        let drawn_px = self.str_width_px(s);
-        self.cursor.x += drawn_px as i32;
-        Ok(())
-    }
-
-    /// Pixel width of a string (no trailing spacing on the last char).
-    fn str_width_px(&self, s: &str) -> u32 {
-        let n = s.chars().count() as u32;
-        if n == 0 {
-            return 0;
-        }
-        n * self.char_w + (n - 1) * self.spacing
-    }
-
-    /// How many characters fit in `px` pixels?
-    fn px_to_chars(&self, px: u32) -> usize {
-        if self.char_w == 0 {
-            return 0;
-        }
-        // Each char except the first needs `spacing` extra pixels.
-        // chars * char_w + (chars-1) * spacing <= px
-        // chars * (char_w + spacing) <= px + spacing
-        ((px + self.spacing) / (self.char_w + self.spacing)) as usize
-    }
-
-    /// Maximum characters that fit in one full console line.
-    fn chars_per_line(&self) -> usize {
-        self.px_to_chars(self.bounds.size.width)
-    }
-
-    /// Split `text` so that the first part fits in `max_chars` characters,
-    /// preferring to break at a space.  Returns `(chunk, remainder)`.
-    fn split_at_wrap(text: &str, max_chars: usize) -> (&str, &str) {
-        let char_count = text.chars().count();
-
-        if char_count <= max_chars {
-            return (text, "");
-        }
-
-        // Try to find a word boundary to break at.
-        let candidate = &text[..text
-            .char_indices()
-            .nth(max_chars)
-            .map(|(i, _)| i)
-            .unwrap_or(text.len())];
-
-        if let Some(space_pos) = candidate.rfind(' ') {
-            (&text[..space_pos], &text[space_pos..])
-        } else {
-            // No space found — hard break at max_chars.
-            (candidate, &text[candidate.len()..])
-        }
-    }
-
-    /// If the cursor has moved below the visible area, scroll up by one line.
-    fn scroll_if_needed(&mut self) -> Result<(), D::Error> {
-        let max_y = self.bounds.size.height as i32;
-
-        while self.cursor.y + self.char_h as i32 > max_y {
-            self.scroll_up()?;
-        }
-        Ok(())
-    }
-
-    /// Scroll the console content up by one character line.
-    fn scroll_up(&mut self) -> Result<(), D::Error> {
-        let line_h = self.char_h;
-        let w = self.bounds.size.width;
-        let h = self.bounds.size.height;
-        let origin = self.bounds.top_left;
-
-        // Copy each row of pixels one `line_h` upward.
-        // We do this row-by-row using individual pixels — a simple but
-        // portable approach that works on any DrawTarget.
-        for y in 0..(h - line_h) {
-            for x in 0..w {
-                let src = Point::new(origin.x + x as i32, origin.y + y as i32 + line_h as i32);
-                // Read pixel via a tiny single-pixel iterator trick using a
-                // sub-display slice isn't available on all targets, so we
-                // rely on the display implementing `DrawTarget` only.
-                // Instead, we store the row in a buffer using `Pixel` draws.
-                let _ = Pixel(Point::new(origin.x + x as i32, origin.y + y as i32), {
-                    // NOTE: We cannot *read* pixels from a generic DrawTarget.
-                    // See note below about scroll_up limitations.
-                    let _ = src;
-                    self.bg // placeholder — see note
-                })
-                .draw(self.display);
+        for line in 1..total_lines {
+            for x in 0..total_width {
+                let src = Point::new(
+                    self.bounds.top_left.x + x as i32,
+                    self.bounds.top_left.y + (line * line_h) as i32,
+                );
+                let dst = Point::new(
+                    self.bounds.top_left.x + x as i32,
+                    self.bounds.top_left.y + ((line - 1) * line_h) as i32,
+                );
+                let pixel = self.framebuffer.get_pixel(src);
+                self.framebuffer.set_pixel(dst, pixel.unwrap());
             }
         }
 
-        // Because generic `DrawTarget` is write-only, we cannot truly copy
-        // pixels. The portable alternative is a full redraw. If your display
-        // implements a framebuffer or supports `ReadTarget`, see the note at
-        // the bottom of this file.
-        //
-        // Simple approach: clear the bottom line.
-        let bottom_line = Rectangle::new(
-            Point::new(origin.x, origin.y + (h - line_h) as i32),
-            Size::new(w, line_h),
-        );
-        bottom_line
-            .into_styled(PrimitiveStyle::with_fill(self.bg))
-            .draw(self.display)?;
+        let clear_style = PrimitiveStyleBuilder::new()
+            .fill_color(self.background)
+            .build();
 
-        self.cursor.y -= line_h as i32;
-        Ok(())
+        Rectangle::new(
+            Point::new(
+                self.bounds.top_left.x,
+                self.bounds.top_left.y + ((total_lines - 1) * line_h) as i32,
+            ),
+            Size::new(total_width, line_h),
+        )
+        .into_styled(clear_style)
+        .draw(self.framebuffer)
+        .ok();
+
+        self.cursor.height = total_lines - 1;
+    }
+
+    pub fn update_buffer(&mut self, buffer: &'a mut FrameBuffer<'a>) {
+        self.framebuffer = buffer;
+        self.update_console(self.font, self.bounds.top_left, self.bounds.size);
+    }
+
+    pub fn update_font(&mut self, font: &'a MonoFont<'a>) {
+        self.update_console(font, self.bounds.top_left, self.bounds.size);
+    }
+
+    pub fn update_position(&mut self, position: Point) {
+        self.update_console(self.font, position, self.bounds.size);
+    }
+
+    pub fn update_size(&mut self, size: Size) {
+        self.update_console(self.font, self.bounds.top_left, size);
+    }
+
+    pub fn update_console(&mut self, font: &'a MonoFont<'a>, position: Point, size: Size) {
+        let w = font.character_size.width;
+        let h = font.character_size.height + font.character_spacing;
+        let mcw = size.width / w;
+        let mch = size.height / h;
+
+        self.font = font;
+        self.bounds = Rectangle::new(position, size);
+        self.cursor = Cursor::new(mcw, mch);
+        self.character_size = Size::new(w, h);
+    }
+}
+
+impl Write for Console<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        match self.draw_text(s, Rgb888::WHITE) {
+            Ok(_) => Ok(()),
+            Err(_) => Err(fmt::Error),
+        }
     }
 }

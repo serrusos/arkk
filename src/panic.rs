@@ -11,7 +11,9 @@ use embedded_graphics::{
     text::Text,
 };
 
-use crate::{PANIC_MANAGER, panic::errors::ErrorTypeEnum, serial};
+use crate::{
+    PANIC_MANAGER, graphical::framebuffer::FrameBuffer, panic::errors::ErrorTypeEnum, serial,
+};
 
 use core::fmt::Write;
 
@@ -38,14 +40,22 @@ impl PanicManager {
     ) -> ! {
         let mut port = serial();
         writeln!(port, "Locking display manager").unwrap();
+        unsafe { DISPLAY_MANAGER.force_unlock() };
         let mut manager = DISPLAY_MANAGER.lock();
 
         writeln!(port, "Reading main display").unwrap();
-        if let Some(display) = manager.get_display(0) {
-            let size = display.size();
-            let rect = Rectangle::new(Point::new(0, 0), size);
-            display.fill_solid(&rect, Rgb888::new(0, 0, 0));
 
+        if let Some(display) = manager.get_display(0) {
+            writeln!(port, "Creating new framebuffer").unwrap();
+
+            let mut framebuffer = FrameBuffer::new(display.buffer, display.info);
+            let size = framebuffer.size();
+            let rect = Rectangle::new(Point::new(0, 0), size);
+
+            writeln!(port, "Refreshing").unwrap();
+            framebuffer.fill_solid(&rect, Rgb888::new(0, 0, 0));
+
+            writeln!(port, "Formatting stop code").unwrap();
             let mut buf = [0u8; 128];
             let s = format_no_std::show(
                 &mut buf,
@@ -81,9 +91,11 @@ impl PanicManager {
                 ((size.height - mbb.size.height) / 2) as i32,
             );
 
-            btext.draw(display).unwrap();
-            mtext.draw(display).unwrap();
+            btext.draw(&mut framebuffer).unwrap();
+            mtext.draw(&mut framebuffer).unwrap();
         }
+
+        writeln!(port, "Failed").unwrap();
 
         loop {}
     }

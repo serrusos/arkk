@@ -29,24 +29,23 @@ unsafe impl GlobalAlloc for Allocator {
 #[global_allocator]
 static ALLOCATOR: Allocator = Allocator::new();
 
-use core::alloc::GlobalAlloc;
+use core::{alloc::GlobalAlloc, fmt::Write};
 
 use crate::{
     devices::display::{Display, DisplayManager},
-    graphical::console::Console,
+    graphical::{console::Console, framebuffer::FrameBuffer},
     panic::PanicManager,
 };
 use bootloader_api::{BootInfo, entry_point};
 use embedded_graphics::{
-    draw_target::DrawTarget,
     mono_font::jis_x0201::FONT_10X20,
     pixelcolor::Rgb888,
-    prelude::{OriginDimensions, Point, RgbColor},
-    primitives::Rectangle,
+    prelude::{OriginDimensions, Point},
 };
 
 use spin::Mutex;
 use uart_16550::{Config, Uart16550Tty, backend::PioBackend};
+use x86_64::instructions::interrupts::int3;
 
 static DISPLAY_MANAGER: Mutex<DisplayManager> = Mutex::new(DisplayManager::new());
 static PANIC_MANAGER: Mutex<PanicManager> = Mutex::new(PanicManager::new());
@@ -72,7 +71,7 @@ pub fn exit_qemu(exit_code: QemuExitCode) -> ! {
 }
 
 pub fn serial() -> Uart16550Tty<PioBackend> {
-    unsafe { Uart16550Tty::new_port(0x3F8, Config::default()).expect("should initialize device") }
+    unsafe { Uart16550Tty::new_port(0x3F8, Config::default()).expect("Should initialize device") }
 }
 
 fn main(boot_info: &'static mut BootInfo) -> ! {
@@ -87,18 +86,28 @@ fn main(boot_info: &'static mut BootInfo) -> ! {
         DISPLAY_MANAGER.lock().add_display(display);
     }
 
-    {
-        let mut display_manager = DISPLAY_MANAGER.lock();
-        let display = display_manager.get_display(0).unwrap();
-        let rect = Rectangle::new(Point::new(0, 0), display.size());
-        display.fill_solid(&rect, Rgb888::new(0, 0, 0));
+    let mut display_manager = DISPLAY_MANAGER.lock();
+    let display = display_manager.get_display(0).unwrap();
 
-        let mut console = Console::new(display, &FONT_10X20, RgbColor::WHITE, Rgb888::new(0, 0, 0));
-        console.push("It's now safe to turn off your computer.");
-        console.newline();
-        console.push("If you want to restart your computer, press CTRL+ALT+DEL.");
-    }
+    let mut framebuffer = FrameBuffer::new(display.buffer, display.info);
+    let size = framebuffer.size();
 
+    let mut console = Console::new(
+        &FONT_10X20,
+        &mut framebuffer,
+        Point::new(0, 0),
+        size,
+        Rgb888::new(0, 0, 0),
+    );
+    writeln!(console, "It's now safe to turn off your computer.").unwrap();
+    writeln!(console, "").unwrap();
+    writeln!(
+        console,
+        "If you want to restart your computer, press CTRL+ALT+DEL."
+    )
+    .unwrap();
+
+    int3();
     unsafe { *(0xdeadbeef as *mut u8) = 0 }
 
     loop {}

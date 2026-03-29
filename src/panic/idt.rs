@@ -4,13 +4,17 @@ use x86_64::{
     structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
 };
 
-use crate::{PANIC_MANAGER, panic::errors::ErrorTypeEnum};
+use crate::{PANIC_MANAGER, panic::errors::ErrorTypeEnum, serial};
+use core::fmt::Write;
 
 extern "x86-interrupt" fn divide_error(stack_frame: InterruptStackFrame) {
     match stack_frame.code_segment.rpl() {
         x86_64::PrivilegeLevel::Ring0 => {}
         _ => unsafe { stack_frame.iretq() },
     }
+
+    let mut port = serial();
+    writeln!(port, "GOT STOP CODE 0x0").unwrap();
 
     let mut manager = PANIC_MANAGER.lock();
     let value = 0x0;
@@ -29,6 +33,9 @@ extern "x86-interrupt" fn overflow(stack_frame: InterruptStackFrame) {
         _ => unsafe { stack_frame.iretq() },
     }
 
+    let mut port = serial();
+    writeln!(port, "GOT STOP CODE 0x4").unwrap();
+
     let mut manager = PANIC_MANAGER.lock();
     let value = 0x4;
     manager.bug_check(
@@ -45,6 +52,9 @@ extern "x86-interrupt" fn bound_range_exceeded(stack_frame: InterruptStackFrame)
         x86_64::PrivilegeLevel::Ring0 => {}
         _ => unsafe { stack_frame.iretq() },
     }
+
+    let mut port = serial();
+    writeln!(port, "GOT STOP CODE 0x5").unwrap();
 
     let mut manager = PANIC_MANAGER.lock();
     let value = 0x5;
@@ -65,6 +75,10 @@ extern "x86-interrupt" fn invalid_opcode(stack_frame: InterruptStackFrame) {
 
     let mut manager = PANIC_MANAGER.lock();
     let value = 0x6;
+
+    let mut port = serial();
+    writeln!(port, "GOT STOP CODE 0x6").unwrap();
+
     manager.bug_check(
         ErrorTypeEnum::UnexpectedKernelModeTrap,
         Some(&value),
@@ -77,6 +91,10 @@ extern "x86-interrupt" fn invalid_opcode(stack_frame: InterruptStackFrame) {
 extern "x86-interrupt" fn double_fault(_stack_frame: InterruptStackFrame, _error_code: u64) -> ! {
     let mut manager = PANIC_MANAGER.lock();
     let value = 0x8;
+
+    let mut port = serial();
+    writeln!(port, "GOT STOP CODE 0x8").unwrap();
+
     manager.bug_check(
         ErrorTypeEnum::UnexpectedKernelModeTrap,
         Some(&value),
@@ -89,6 +107,10 @@ extern "x86-interrupt" fn double_fault(_stack_frame: InterruptStackFrame, _error
 extern "x86-interrupt" fn invalid_tss(_stack_frame: InterruptStackFrame, _error_code: u64) {
     let mut manager = PANIC_MANAGER.lock();
     let value = 0xa;
+
+    let mut port = serial();
+    writeln!(port, "GOT STOP CODE 0xa").unwrap();
+
     manager.bug_check(
         ErrorTypeEnum::UnexpectedKernelModeTrap,
         Some(&value),
@@ -103,6 +125,9 @@ extern "x86-interrupt" fn breakpoint(stack_frame: InterruptStackFrame) {
         x86_64::PrivilegeLevel::Ring0 => {}
         _ => unsafe { stack_frame.iretq() },
     }
+
+    let mut port = serial();
+    writeln!(port, "GOT STOP CODE 0x3").unwrap();
 
     let mut manager = PANIC_MANAGER.lock();
     let value = 0x3;
@@ -122,6 +147,9 @@ extern "x86-interrupt" fn page_fault(
     let mut manager = PANIC_MANAGER.lock();
     let faulty_address = Cr2::read().unwrap();
 
+    let mut port = serial();
+    writeln!(port, "GOT STOP CODE PAGE_FAULT_IN_NONPAGED_AREA").unwrap();
+
     manager.bug_check(
         ErrorTypeEnum::PageFaultInNonpagedArea,
         Some((&faulty_address).as_ptr() as *const u32),
@@ -133,6 +161,9 @@ extern "x86-interrupt" fn page_fault(
 
 extern "x86-interrupt" fn hypervisor_error(_stack_frame: InterruptStackFrame) {
     let mut manager = PANIC_MANAGER.lock();
+
+    let mut port = serial();
+    writeln!(port, "GOT STOP CODE HYPERVISOR_ERROR").unwrap();
 
     manager.bug_check(ErrorTypeEnum::HypervisorError, None, None, None, None);
 }
